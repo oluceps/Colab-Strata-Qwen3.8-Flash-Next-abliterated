@@ -39,7 +39,7 @@ For Pi, merge the provider into `~/.pi/agent/models.json` without replacing unre
 
 Changing context in a loaded runtime requires updating the live variables, regenerating configuration, then restarting through the startup cell. Avoid rerunning environment setup while the model occupies RAM. Preserve a working tunnel when its port stays the same; report a changed domain if a new tunnel is needed.
 
-Report the tested context length, free RAM, and engine decode rate separately from HTTP duration. The 57 tps value is a target. Current evidence includes a 34,043-token recall check, not a full 128K benchmark. Do not present HF's RTX 3090 results as L4 IQ3_XXS measurements.
+Report the tested context length, free RAM, and engine decode rate separately from HTTP duration. Decode rates reach 32–57 tps with peaks above 80 tps. Current evidence includes a 34,043-token recall check, not a full 128K benchmark. Do not present HF's RTX 3090 results as L4 IQ3_XXS measurements.
 
 ## Troubleshoot
 

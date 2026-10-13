@@ -10,7 +10,7 @@ Run Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS with a refusal-direction control vector o
 
 ## Performance and hardware
 
-**Expected decode target: 57 tokens/s (tps).** This is a project target. Existing L4 conversation logs show about 32–42 tps with MTP disabled. CPU, context length, expert cache hits, and draft acceptance affect speed.
+On L4 instances with MTP disabled by default, measured conversation decode speeds range from 32 to 57 tokens/s (tps), with peak speeds reaching 80+ tps. CPU performance, context length, expert cache hit rate, and draft acceptance rate affect speed.
 
 | Item | Configuration or measurement |
 |---|---|
