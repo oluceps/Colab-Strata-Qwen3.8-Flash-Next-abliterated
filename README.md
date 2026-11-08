@@ -33,7 +33,7 @@
 
 原仓库作者测试了 IQ3_S 与 IQ2_XS 量化，未测试 IQ3_XXS。作者报告两档量化通过 5 个小型代码工具任务与 32K/115K 标记检索测试。在 RTX 3090 与 EPYC 平台上，32K 上下文的解码速度约为 59 与 87 tps。该测试结果仅供能力参考，不代表 Colab L4 的表现。详细数据参见[原仓库测量说明](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF#measurements)。
 
-代码同时支持 IQ2_XS（约 68 GB 下载量，35.5 GB 专家内存）与 IQ3_S（约 83.6 GB 下载量，50 GB 专家内存）。在 53 GiB 内存的运行时中默认使用 IQ3_XXS。若内存紧张，可切换为 IQ2_XS。模型许可证参见 [Hugging Face LICENSE](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE)。
+代码同时支持 IQ2_XS（约 68 GB 下载量，35.5 GB 专家内存）与 IQ3_S（约 83.6 GB 下载量，50 GB 专家内存）。在 53 GiB 内存的运行时中默认使用 IQ3_XXS，调优优先保留主模型精度与 int8 KV。若内存紧张，先减小预填充分块或关闭 MTP 做对照；仅在明确接受精度取舍时选择更低量化。模型许可证参见 [Hugging Face LICENSE](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE)。
 
 ## Colab Pro 额度计算
 
@@ -115,9 +115,15 @@ strata_l4_gsq_rco_iq3_xxs.ipynb。选择 L4 High-RAM 运行时并按顺序执行
 | `QUANT` | `IQ3_XXS` | 量化等级，可选 `IQ2_XS` 或 `IQ3_S` |
 | `MAX_CONTEXT` | `262144` | 上下文总长度（包含输入与输出） |
 | `KV_RESIDENT` | `32768` | 显存驻留 KV 窗口大小，其余放入系统内存 |
-| `PREFILL` | `512` | 预填充批处理大小 |
-| `ENABLE_MTP` | `False` | 是否启用 MTP，默认使用 lookup draft `--spec 2` |
+| `PREFILL` | `"auto"` | 根据显存预算自动选择预填充分块，默认上限 8192 |
+| `ENABLE_MTP` | `True` | 启用 MTP：`--spec 4 --spec-min-p 0.5 --lookup-chain 4` |
 | `PORT` | `8095` | 服务监听端口，避免冲突推荐使用 8095 到 8105 |
+
+默认性能配置保留 IQ3_XXS、256K 上下文、int8 KV 和原有采样设置。MTP 使用 Q2_0 草稿专家，所有草稿由主模型验证；这不会把主模型切换到 IQ2_XS。lookup chain 可把总验证窗口扩展到最多 8 tokens，实际长度由匹配和收益策略决定。首次启用需要额外下载约 6 GB 的 MTP 源张量并生成运行时文件，也会增加显存与主机内存占用；自动专家缓存会为 MTP 腾出空间。
+
+专家缓存每个验证窗口最多替换 96 个专家（`--adapt-every 1 --adapt-swaps 96`），并启用 `--prompt-cache-tail` 在已有分块边界保留靠近提示词末尾的检查点。服务将学到的专家 profile 保存至 `STATE / "expert-profile-learned.bin"`，每 5 分钟在请求间隙检查保存，并在正常退出时保存，下次启动自动复用。该文件随 Colab 实例删除而清空；CPU 线程由引擎自动选择。
+
+这组性能参数尚未在 L4 上实测，MTP 与更频繁的专家交换可能增加开销。对比时固定输入与采样参数，分别记录预填充耗时、解码 tps、草稿接受率与内存峰值。可设 `ENABLE_MTP=False`，或将 `PREFILL` 改为 `1024`/`2048` 后重新生成配置并重启，以保留模型精度做对照。
 
 ![Strata 引擎运行状态](screenshot/engine.png)
 

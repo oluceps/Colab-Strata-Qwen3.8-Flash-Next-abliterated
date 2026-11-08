@@ -10,7 +10,7 @@
 # README 测速来自 RTX 3090 + EPYC，不代表 L4 的速度。
 # 此配置只提供文本服务，不下载视觉投影器。
 # 保留已有模型文件。新引擎和 pack 使用独立目录，不覆盖旧安装。
-# 默认关闭 MTP，使用 lookup draft（--spec 2）。先测试本地推理，再开启公网隧道。
+# 默认启用 MTP（--spec 4）与 lookup chain，自动预填充，先测试本地推理，再开启公网隧道。
 # 来源：https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF
 # 权重保持原样。控制向量在运行时投影，层范围 4–44，强度 1.0。
 
@@ -44,8 +44,8 @@ STATE = DATA / f"colab-alesha-{QUANT.lower()}"
 PORT = 8095  # Colab 的 node 服务可能占用 8080。
 MAX_CONTEXT = 262144
 KV_RESIDENT = 32768  # int8 KV streaming：完整缓存放在 RAM，窗口留在显存。
-PREFILL = 512
-ENABLE_MTP = False  # 首次测试后可改为 True，并从第 3 个代码单元重新运行。
+PREFILL = "auto"  # 按显存预算选择分块，默认上限 8192；可设为 1024/2048 做对照。
+ENABLE_MTP = True  # 主模型验证草稿；设为 False 可对比仅 lookup 的速度与显存。
 SHARDS = [f"{QUANT}/Qwen3.8-Flash-Next-GSQ-RCO-{QUANT}-{i:05d}-of-00002.gguf" for i in (1, 2)]
 VECTOR_NAME = "Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf"
 VECTOR = MODEL_DIR / VECTOR_NAME
@@ -226,7 +226,7 @@ PLE_GGUF = MODEL_DIR / SHARDS[1]
 # 完成标记包含源码版本和分片信息。中断的 pack 不会被当作完成。
 # 不生成额外的 experts.bin，避免复制约 50 GiB 专家权重。
 # GSQ-RCO 使用原生张量，不启用 Orca 的 --compat-bf16 转换。
-# MTP 可选。默认先验证不带 MTP 的推理，再测试加速效果。
+# 默认构建 MTP 草稿层；主模型仍用 IQ3_XXS，int8 KV 与原有采样参数保持不变。
 
 # %%
 signature = {"strata": STRATA_REV, "download": json.loads((MODEL_DIR / "colab-download.json").read_text())}
@@ -260,11 +260,12 @@ if ENABLE_MTP:
 args = ["--pack", str(PACK), "--native", str(GGUF), "--ple-gguf", str(PLE_GGUF),
         "--expert-profile", str(ROOT / "data/expert-profile.bin"), "--expert-cache", "auto",
         "--prefill", str(PREFILL), "--spec", "4" if ENABLE_MTP else "2",
-        "--max-context", str(MAX_CONTEXT), "--kv", "int8"]
+        "--max-context", str(MAX_CONTEXT), "--kv", "int8",
+        "--adapt-every", "1", "--adapt-swaps", "96", "--prompt-cache-tail"]
 if KV_RESIDENT and MAX_CONTEXT > KV_RESIDENT:
     args += ["--kv-resident", str(KV_RESIDENT)]
 if ENABLE_MTP:
-    args += ["--mtp", str(MTP / "rt"), "--spec-min-p", "0.5"]
+    args += ["--mtp", str(MTP / "rt"), "--spec-min-p", "0.5", "--lookup-chain", "4"]
 args += ["--control-vector-scaled", f"{VECTOR}:1.0",
          "--control-vector-layer-range", "4", "44", "--cvec-mode", "project", "--cvec-dir", "per-layer"]
 MODEL_NAME = f"alesha-qwen3.8-flash-next-gsq-rco-{QUANT.lower()}"
@@ -272,6 +273,8 @@ CONFIG = STATE / "strata-alesha.json"
 config = {"exe": str(BUILD / "strata"), "args": args, "cwd": str(ROOT),
           "tokenizer": str(PACK / "tokenizer"), "model_name": MODEL_NAME,
           "sampling": {"experimental_speed_projection": True},
+          "expert_profile_save": str(STATE / "expert-profile-learned.bin"),
+          "expert_profile_save_every": 5,
           "log": str(STATE / "engine.log"), "host": "127.0.0.1", "port": PORT}
 CONFIG.write_text(json.dumps(config, indent=2))
 print(f"配置：context={MAX_CONTEXT}, prefill={PREFILL}, MTP={ENABLE_MTP}")
@@ -479,7 +482,7 @@ print("API key 文件：", key_path)
 # ## 查看日志或停止服务
 # 查看日志：`print((STATE / 'engine.log').read_text()[-8000:])`
 # 停止服务：先运行 `stop_owned('tunnel')`，再运行 `stop_owned('server')`。
-# 要比较 MTP 性能，请保存本次耗时，再启用 ENABLE_MTP 并重跑配置和测试。
+# 要比较 MTP 性能，请保存本次耗时，再设 ENABLE_MTP=False 并重跑配置和测试。
 # 请求耗时包含预填充与 HTTP 开销，不等于引擎解码 tokens/s。
 
 # %% [markdown]

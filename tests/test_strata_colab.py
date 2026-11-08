@@ -33,6 +33,26 @@ def functions():
     return namespace
 
 
+def configuration(**overrides):
+    tree = source_tree()
+    defaults = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in {'QUANT', 'MAX_CONTEXT', 'KV_RESIDENT', 'PREFILL', 'ENABLE_MTP'}:
+                defaults[name] = ast.literal_eval(node.value)
+    start = next(i for i, node in enumerate(tree.body)
+                 if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'args' for t in node.targets))
+    end = next(i for i, node in enumerate(tree.body)
+               if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'config' for t in node.targets))
+    ns = dict(PACK=Path('/pack'), GGUF=Path('/first.gguf'), PLE_GGUF=Path('/second.gguf'),
+              ROOT=Path('/engine'), MTP=Path('/mtp'), VECTOR=Path('/vector.gguf'),
+              STATE=Path('/state'), BUILD=Path('/build-sm89'), PORT=8080, **defaults)
+    ns.update(overrides)
+    exec(compile(ast.Module(body=tree.body[start:end + 1], type_ignores=[]), str(SOURCE), 'exec'), ns)
+    return ns['config']
+
+
 class NotebookTests(unittest.TestCase):
     def test_occupied_port_selects_another_without_stopping_listener(self):
         ns = functions()
@@ -46,27 +66,38 @@ class NotebookTests(unittest.TestCase):
                 pass
 
     def test_gsq_config_uses_second_shard_and_projection(self):
-        tree = source_tree()
-        start = next(i for i, node in enumerate(tree.body)
-                     if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "args" for t in node.targets))
-        end = next(i for i, node in enumerate(tree.body)
-                   if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "config" for t in node.targets))
-        ns = dict(PACK=Path('/pack'), GGUF=Path('/first.gguf'), PLE_GGUF=Path('/second.gguf'),
-                  ROOT=Path('/engine'), PREFILL=512, ENABLE_MTP=False, MAX_CONTEXT=262144,
-                  KV_RESIDENT=32768,
-                  VECTOR=Path('/vector.gguf'), QUANT='IQ3_S', STATE=Path('/state'),
-                  BUILD=Path('/build-sm89'), PORT=8080)
-        exec(compile(ast.Module(body=tree.body[start:end + 1], type_ignores=[]), str(SOURCE), 'exec'), ns)
-        args = ns['config']['args']
+        config = configuration()
+        args = config['args']
+        self.assertEqual(config['model_name'], 'alesha-qwen3.8-flash-next-gsq-rco-iq3_xxs')
         self.assertEqual(args[args.index('--ple-gguf') + 1], '/second.gguf')
         self.assertEqual(args[args.index('--control-vector-scaled') + 1], '/vector.gguf:1.0')
         self.assertEqual(args[args.index('--control-vector-layer-range') + 1:args.index('--control-vector-layer-range') + 3], ['4', '44'])
         self.assertEqual(args[args.index('--cvec-mode') + 1], 'project')
-        self.assertEqual(args[args.index('--spec') + 1], '2')
-        self.assertNotIn('--mtp', args)
+        self.assertEqual(args[args.index('--prefill') + 1], 'auto')
+        self.assertEqual(args[args.index('--spec') + 1], '4')
+        self.assertEqual(args[args.index('--mtp') + 1], '/mtp/rt')
+        self.assertEqual(args[args.index('--spec-min-p') + 1], '0.5')
+        self.assertEqual(args[args.index('--lookup-chain') + 1], '4')
+        self.assertEqual(args[args.index('--adapt-every') + 1], '1')
+        self.assertEqual(args[args.index('--adapt-swaps') + 1], '96')
+        self.assertIn('--prompt-cache-tail', args)
         self.assertEqual(args[args.index('--max-context') + 1], '262144')
         self.assertEqual(args[args.index('--kv-resident') + 1], '32768')
-        self.assertTrue(ns['config']['sampling']['experimental_speed_projection'])
+        self.assertEqual(args[args.index('--kv') + 1], 'int8')
+        self.assertEqual(config['sampling'], {'experimental_speed_projection': True})
+        self.assertEqual(config['expert_profile_save'], '/state/expert-profile-learned.bin')
+        self.assertEqual(config['expert_profile_save_every'], 5)
+
+    def test_mtp_can_be_disabled_without_changing_model_or_kv_precision(self):
+        config = configuration(ENABLE_MTP=False, PREFILL=1024)
+        args = config['args']
+        self.assertEqual(config['model_name'], 'alesha-qwen3.8-flash-next-gsq-rco-iq3_xxs')
+        self.assertEqual(args[args.index('--prefill') + 1], '1024')
+        self.assertEqual(args[args.index('--spec') + 1], '2')
+        self.assertEqual(args[args.index('--kv') + 1], 'int8')
+        self.assertNotIn('--mtp', args)
+        self.assertNotIn('--spec-min-p', args)
+        self.assertNotIn('--lookup-chain', args)
 
     def test_embedded_download_script_compiles(self):
         tree = source_tree()

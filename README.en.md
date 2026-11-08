@@ -31,7 +31,7 @@ On L4 instances with the previous 128K configuration and MTP disabled, measured 
 
 The author tested IQ3_S and IQ2_XS, not IQ3_XXS. Both tested sizes passed five small coding tasks and marker retrieval at 32K/115K. At 32K, decode reached about 59/87 tps on RTX 3090 + EPYC. These results do not establish L4 IQ3_XXS accuracy or speed. See the [measurements](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF#measurements).
 
-Optional IQ2_XS uses about 68 GB of downloads and 35.5 GB of expert RAM; IQ3_S uses about 83.6/50 GB. Prefer IQ3_XXS for a 53 GiB runtime, or IQ2_XS when RAM is tight. Model terms are in the [HF license](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE); engine terms are in its upstream repository.
+Optional IQ2_XS uses about 68 GB of downloads and 35.5 GB of expert RAM; IQ3_S uses about 83.6/50 GB. The default for a 53 GiB runtime is IQ3_XXS; tuning preserves main-model precision and int8 KV. If memory is tight, first reduce the prefill chunk or disable MTP for comparison. Choose a lower quantization only when its precision tradeoff is explicitly acceptable. Model terms are in the [HF license](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE); engine terms are in its upstream repository.
 
 ## Use the monthly Pro allowance
 
@@ -109,9 +109,15 @@ Edit the first code cell before a fresh run. To change context on a running serv
 | `QUANT` | `IQ3_XXS` | Also supports `IQ2_XS`, `IQ3_S` |
 | `MAX_CONTEXT` | `262144` | Shared input/output limit |
 | `KV_RESIDENT` | `32768` | VRAM window; full KV stays in RAM |
-| `PREFILL` | `512` | Prefill batch size |
-| `ENABLE_MTP` | `False` | Lookup drafting with `--spec 2`; MTP needs extra downloads and memory |
+| `PREFILL` | `"auto"` | Selects a prefill chunk within the VRAM budget, up to 8192 by default |
+| `ENABLE_MTP` | `True` | MTP with `--spec 4 --spec-min-p 0.5 --lookup-chain 4` |
 | `PORT` | `8095` | Avoids Colab's possible 8080 listener; selects 8095–8105 if occupied |
+
+The performance defaults retain IQ3_XXS, 256K context, int8 KV, and existing sampling settings. MTP uses Q2_0 draft experts, with every draft verified by the main model; this does not switch the main model to IQ2_XS. Lookup chaining may extend the total verification window to 8 tokens, with the actual length chosen by matching and the cost policy. The first run downloads about 6 GB of MTP source tensors and builds runtime files. MTP also uses additional VRAM and host RAM, so the automatic expert cache makes room for it.
+
+The expert cache considers up to 96 swaps every verification window (`--adapt-every 1 --adapt-swaps 96`). `--prompt-cache-tail` keeps a checkpoint near the prompt end at an existing chunk boundary. The server saves the learned expert profile to `STATE / "expert-profile-learned.bin"`, checking every 5 minutes between requests and saving on a clean exit; the next start reuses it. Colab runtime deletion removes this file. CPU workers remain under the engine's automatic selection.
+
+These performance settings have not been tested on L4. MTP and more frequent expert swaps can add overhead. Compare with fixed input and sampling settings, recording prefill time, decode tps, draft acceptance, and peak memory separately. Set `ENABLE_MTP=False` or use `PREFILL=1024`/`2048`, regenerate configuration, and restart for comparisons at the same model precision.
 
 Strata provides OpenAI Chat Completions (`POST /v1/chat/completions`), Anthropic Messages, and OpenAI Responses endpoints. Its [API documentation](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#using-it) lists endpoints, request examples, and authentication. This Pi setup selects `openai-completions`, so it uses the Chat Completions route. Send the key as `Authorization: Bearer <key>`. Add the provider to `~/.pi/agent/models.json`, preserve existing providers, and use:
 
