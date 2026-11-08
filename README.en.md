@@ -10,7 +10,7 @@ Run Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS with a refusal-direction control vector o
 
 ## Performance and hardware
 
-On L4 instances with MTP disabled by default, measured conversation decode speeds range from 32 to 57 tokens/s (tps), with peak speeds reaching 80+ tps. CPU performance, context length, expert cache hit rate, and draft acceptance rate affect speed.
+On L4 instances with the previous 128K configuration and MTP disabled, measured conversation decode speeds range from 32 to 57 tokens/s (tps), with peak speeds reaching 80+ tps. CPU performance, context length, expert cache hit rate, and draft acceptance rate affect speed.
 
 | Item | Configuration or measurement |
 |---|---|
@@ -18,12 +18,12 @@ On L4 instances with MTP disabled by default, measured conversation decode speed
 | Tested runtime | About 22 GiB usable VRAM and 53 GiB system RAM |
 | Default weights | IQ3_XXS, about 75.8 GB across two GGUF shards |
 | RAM requirement | About 43 GB for experts; startup checks for 48 GiB available RAM |
-| Context | 131,072 tokens, int8 KV streaming, 32,768 cells resident in VRAM |
-| Full KV cache | 1.55 GiB of system RAM in the engine log |
-| Long-input test | 34,043 tokens, correct recall of an opening marker, about 60 seconds |
-| RAM after test | About 6.4 GiB available |
+| Default context | 262,144 tokens, int8 KV streaming, 32,768 cells resident in VRAM |
+| Full KV cache | About 3.09 GiB of system RAM at 256K, calculated from the engine format |
+| Long-input test (previous 128K configuration) | 34,043 tokens, correct recall of an opening marker, about 60 seconds |
+| RAM after test (previous 128K configuration) | About 6.4 GiB available |
 
-A full 128K input remains untested. The long-input time includes prefill and does not measure decode tps. This deployment serves text only. The first build takes about 10–30 minutes; download time depends on network speed. The disk check reserves the missing download sizes plus 24 GiB of workspace.
+256K is the base model's native context length. The engine allocates the full host KV cache at startup based on the configured limit; moving from 128K to 256K adds about 1.55 GiB of system RAM. Other buffers also affect total RAM and peak VRAM. The 256K configuration has not been tested on L4, and full 128K and 256K inputs remain untested. The long-input time includes prefill and does not measure decode tps. This deployment serves text only. The first build takes about 10–30 minutes; download time depends on network speed. The disk check reserves the missing download sizes plus 24 GiB of workspace.
 
 ## Model and capabilities
 
@@ -83,7 +83,7 @@ Return to the cell and press Colab's stop button to interrupt the loop. To stop 
    Read this project's skills/strata-colab/SKILL.md. Use Colab MCP to import
    strata_l4_gsq_rco_iq3_xxs.ipynb, select L4 High-RAM, run the cells in order,
    test inference and authentication, and supply client configuration.
-   Use the default IQ3_XXS weights and 128K context.
+   Use the default IQ3_XXS weights and 256K context.
    ```
 
 5. For automatic discovery, install the entire `skills/strata-colab` folder in your agent's skills directory. Configure clients with the URL and key from this run.
@@ -107,7 +107,7 @@ Edit the first code cell before a fresh run. To change context on a running serv
 | Variable | Default | Purpose |
 |---|---|---|
 | `QUANT` | `IQ3_XXS` | Also supports `IQ2_XS`, `IQ3_S` |
-| `MAX_CONTEXT` | `131072` | Shared input/output limit |
+| `MAX_CONTEXT` | `262144` | Shared input/output limit |
 | `KV_RESIDENT` | `32768` | VRAM window; full KV stays in RAM |
 | `PREFILL` | `512` | Prefill batch size |
 | `ENABLE_MTP` | `False` | Lookup drafting with `--spec 2`; MTP needs extra downloads and memory |
@@ -126,7 +126,7 @@ Strata provides OpenAI Chat Completions (`POST /v1/chat/completions`), Anthropic
       "name": "Strata Qwen3.8 Flash Next IQ3_XXS",
       "reasoning": true,
       "input": ["text"],
-      "contextWindow": 131072,
+      "contextWindow": 262144,
       "maxTokens": 4096
     }]
   }
@@ -141,9 +141,9 @@ export STRATA_API_KEY
 pi
 ```
 
-Run `/model` and select `strata-colab/alesha-qwen3.8-flash-next-gsq-rco-iq3_xxs`. Pi's `api` field selects the wire format: `openai-completions` sends OpenAI Chat Completions requests to Strata's `/v1/chat/completions`; `baseUrl` ends in `/v1`. Set `contextWindow` to the server's 131072-token limit. `maxTokens` sets the output cap per reply. See Strata's [API reference](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#using-it).
+Run `/model` and select `strata-colab/alesha-qwen3.8-flash-next-gsq-rco-iq3_xxs`. Pi's `api` field selects the wire format: `openai-completions` sends OpenAI Chat Completions requests to Strata's `/v1/chat/completions`; `baseUrl` ends in `/v1`. Set `contextWindow` to the server's 262144-token limit. `maxTokens` sets the output cap per reply. See Strata's [API reference](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#using-it).
 
-Pi 1.1.0 has no setting to choose a separate compaction model. That requires an extension using `session_before_compact`. In `settings.json`, the model's `compaction.modelOverrides` can use `reserveTokens: 8192` and `keepRecentTokens: 32768`. This compacts history at about 120K. Store critical constraints separately because summaries can lose detail.
+Pi 1.1.0 has no setting to choose a separate compaction model. That requires an extension using `session_before_compact`. In `settings.json`, the model's `compaction.modelOverrides` can use `reserveTokens: 8192` and `keepRecentTokens: 32768`. This compacts history at about 248K. Store critical constraints separately because summaries can lose detail.
 
 The temporary domain can change when the tunnel restarts. The Strata panel's key setting is under **About → Settings**. Long uncached inputs need a longer client timeout.
 

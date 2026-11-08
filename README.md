@@ -10,7 +10,7 @@
 
 ## 性能与硬件规范
 
-在 L4 实例上，默认配置（关闭 MTP）实测对话解码速度约为 32 到 57 tokens/s（tps），峰值可达 80+ tps。实际速度受 CPU 性能、上下文长度、专家缓存命中率与草稿接受率影响。
+此前在 L4 实例的 128K 配置下（关闭 MTP），实测对话解码速度约为 32 到 57 tokens/s（tps），峰值可达 80+ tps。实际速度受 CPU 性能、上下文长度、专家缓存命中率与草稿接受率影响。
 
 | 项目 | 配置与指标 |
 |---|---|
@@ -18,14 +18,14 @@
 | 运行时资源 | 约 22 GiB 可用显存，53 GiB 系统内存 |
 | 默认量化 | IQ3_XXS，2 个分片文件共约 75.8 GB |
 | 专家内存 | 专家权重约占 43 GB，启动前检查可用内存至少 48 GiB |
-| 上下文长度 | 131,072 tokens，int8 KV streaming，显存缓存窗口 32,768 |
-| KV 内存占用 | 完整 KV 缓存占用 1.55 GiB 系统内存 |
-| 长输入测试 | 34,043 tokens，正确回忆开头标记，耗时约 60 秒 |
-| 测试后剩余内存 | 约 6.4 GiB 可用系统内存 |
+| 默认上下文长度 | 262,144 tokens，int8 KV streaming，显存缓存窗口 32,768 |
+| KV 内存占用 | 256K 完整 KV 缓存按引擎格式计算约占 3.09 GiB 系统内存 |
+| 长输入测试（此前 128K 配置） | 34,043 tokens，正确回忆开头标记，耗时约 60 秒 |
+| 测试后剩余内存（此前 128K 配置） | 约 6.4 GiB 可用系统内存 |
 
 ![运行时资源监控](screenshot/monitor.png)
 
-项目未对完整 128K 输入进行压力测试。34K 测试耗时包含预填充耗时，不代表纯解码速度。服务默认仅处理文本输入。首次源码编译需要 10 到 30 分钟。磁盘检查要求剩余空间大于下载文件总大小加 24 GiB 工作空间。
+256K 为基础模型的原生上下文长度。主机 KV 缓存按配置上限在启动时分配，从 128K 扩到 256K 增加约 1.55 GiB 系统内存；进程总内存与显存峰值还受其他缓冲区影响。项目尚未实测 L4 上的 256K 配置，也未对完整 128K 或 256K 输入进行压力测试。34K 测试耗时包含预填充耗时，不代表纯解码速度。服务默认仅处理文本输入。首次源码编译需要 10 到 30 分钟。磁盘检查要求剩余空间大于下载文件总大小加 24 GiB 工作空间。
 
 ## 模型权重与控制向量
 
@@ -89,7 +89,7 @@ while True:
 ```text
 请读取本项目的 skills/strata-colab/SKILL.md，通过 Colab MCP 导入
 strata_l4_gsq_rco_iq3_xxs.ipynb。选择 L4 High-RAM 运行时并按顺序执行，
-验证推理与鉴权功能，最后输出客户端连接配置。使用默认的 IQ3_XXS 权重与 128K 上下文。
+验证推理与鉴权功能，最后输出客户端连接配置。使用默认的 IQ3_XXS 权重与 256K 上下文。
 ```
 
 5. 若需 agent 自动调用该流程，将 `skills/strata-colab` 目录复制到 agent 的 skills 目录。部署完成后，记录生成的公网地址与 API 密钥。
@@ -113,7 +113,7 @@ strata_l4_gsq_rco_iq3_xxs.ipynb。选择 L4 High-RAM 运行时并按顺序执行
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `QUANT` | `IQ3_XXS` | 量化等级，可选 `IQ2_XS` 或 `IQ3_S` |
-| `MAX_CONTEXT` | `131072` | 上下文总长度（包含输入与输出） |
+| `MAX_CONTEXT` | `262144` | 上下文总长度（包含输入与输出） |
 | `KV_RESIDENT` | `32768` | 显存驻留 KV 窗口大小，其余放入系统内存 |
 | `PREFILL` | `512` | 预填充批处理大小 |
 | `ENABLE_MTP` | `False` | 是否启用 MTP，默认使用 lookup draft `--spec 2` |
@@ -149,7 +149,7 @@ curl "$STRATA_BASE_URL/chat/completions" \
       "name": "Strata Qwen3.8 Flash Next IQ3_XXS",
       "reasoning": true,
       "input": ["text"],
-      "contextWindow": 131072,
+      "contextWindow": 262144,
       "maxTokens": 4096
     }]
   }
@@ -164,9 +164,9 @@ export STRATA_API_KEY
 pi
 ```
 
-在 Pi 命令行运行 `/model`，选择 `strata-colab/alesha-qwen3.8-flash-next-gsq-rco-iq3_xxs`。`api` 设置为 `openai-completions`，`baseUrl` 必须以 `/v1` 结尾。`contextWindow` 对应服务的 131072 上限，`maxTokens` 设置单次输出最大 token 数。
+在 Pi 命令行运行 `/model`，选择 `strata-colab/alesha-qwen3.8-flash-next-gsq-rco-iq3_xxs`。`api` 设置为 `openai-completions`，`baseUrl` 必须以 `/v1` 结尾。`contextWindow` 对应服务的 262144 上限，`maxTokens` 设置单次输出最大 token 数。
 
-可在 `settings.json` 中配置 `compaction.modelOverrides`，设置 `reserveTokens: 8192` 与 `keepRecentTokens: 32768`。当上下文接近 120K 时执行历史压缩。Pi 1.1.0 不支持独立压缩模型配置，若需单独摘要模型，需要扩展 `session_before_compact` 钩子。请在外部文件保存关键约束，防止压缩丢失细节。
+可在 `settings.json` 中配置 `compaction.modelOverrides`，设置 `reserveTokens: 8192` 与 `keepRecentTokens: 32768`。当上下文接近 248K 时执行历史压缩。Pi 1.1.0 不支持独立压缩模型配置，若需单独摘要模型，需要扩展 `session_before_compact` 钩子。请在外部文件保存关键约束，防止压缩丢失细节。
 
 ## 项目维护
 

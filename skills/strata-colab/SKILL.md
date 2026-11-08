@@ -18,7 +18,7 @@ Use the user's project checkout. Read `README.md` or `README.en.md` there for cu
 
 ## Deployment invariants
 
-- Default IQ3_XXS uses 128K context, int8 KV streaming, and a 32K VRAM window. Require 48 GiB available RAM before startup. Memory figures use GiB; HF file sizes use decimal GB.
+- Default IQ3_XXS uses 256K context, int8 KV streaming, and a 32K VRAM window. The full host KV cache is about 3.09 GiB at this limit. Require 48 GiB available RAM before startup. Memory figures use GiB; HF file sizes use decimal GB.
 - Use both GGUF shards. `--native` points to shard 1; `--ple-gguf` points to shard 2, which contains the n-gram table.
 - Pack GSQ weights with the notebook's native packing path. Do not add `--compat-bf16`.
 - Apply the included control vector at strength 1.0, layers 4–44, `project` mode and `per-layer` directions. The model weights remain unchanged.
@@ -35,11 +35,11 @@ Use Colab Secrets for `STRATA_API_KEY` and optional `HF_TOKEN`. Do not paste key
 
 For an active session, an optional notebook cell can poll `/health` every five minutes while it sleeps. Explain that the running cell continues to consume compute units and cannot guarantee the runtime will avoid reclamation. Colab Pro+ supports continuous execution up to 24 hours when units remain; ordinary Pro is still subject to its runtime limits. Do not use browser click simulation or scripts that bypass Colab idle limits. Stop the health-check cell with Colab's stop button. Stop the tunnel and model server separately when the user wants to end service use.
 
-For Pi, merge the provider into `~/.pi/agent/models.json` without replacing unrelated providers. Explain that `api: openai-completions` selects the OpenAI Chat Completions wire format and maps to `/v1/chat/completions`; Strata also documents Anthropic Messages and OpenAI Responses endpoints. Link to Strata's `docs/DETAILS.md#using-it` API reference. Use `contextWindow: 131072` and `maxTokens: 4096`. Prefer an exported key variable and `apiKey: "$STRATA_API_KEY"`. If context compaction is requested, use the model-specific budget from the README. Report that summaries can lose detail.
+For Pi, merge the provider into `~/.pi/agent/models.json` without replacing unrelated providers. Explain that `api: openai-completions` selects the OpenAI Chat Completions wire format and maps to `/v1/chat/completions`; Strata also documents Anthropic Messages and OpenAI Responses endpoints. Link to Strata's `docs/DETAILS.md#using-it` API reference. Use `contextWindow: 262144` and `maxTokens: 4096`. Prefer an exported key variable and `apiKey: "$STRATA_API_KEY"`. If context compaction is requested, use the model-specific budget from the README. Report that summaries can lose detail.
 
 Changing context in a loaded runtime requires updating the live variables, regenerating configuration, then restarting through the startup cell. Avoid rerunning environment setup while the model occupies RAM. Preserve a working tunnel when its port stays the same; report a changed domain if a new tunnel is needed.
 
-Report the tested context length, free RAM, and engine decode rate separately from HTTP duration. Decode rates reach 32–57 tps with peaks above 80 tps. Current evidence includes a 34,043-token recall check, not a full 128K benchmark. Do not present HF's RTX 3090 results as L4 IQ3_XXS measurements.
+Report the tested context length, free RAM, and engine decode rate separately from HTTP duration. Decode rates reach 32–57 tps with peaks above 80 tps. Current L4 evidence comes from the previous 128K configuration, including a 34,043-token recall check. The 256K configuration and full 128K/256K inputs remain untested. Do not present HF's RTX 3090 results as L4 IQ3_XXS measurements.
 
 ## Troubleshoot
 

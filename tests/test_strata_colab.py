@@ -52,7 +52,7 @@ class NotebookTests(unittest.TestCase):
         end = next(i for i, node in enumerate(tree.body)
                    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "config" for t in node.targets))
         ns = dict(PACK=Path('/pack'), GGUF=Path('/first.gguf'), PLE_GGUF=Path('/second.gguf'),
-                  ROOT=Path('/engine'), PREFILL=512, ENABLE_MTP=False, MAX_CONTEXT=131072,
+                  ROOT=Path('/engine'), PREFILL=512, ENABLE_MTP=False, MAX_CONTEXT=262144,
                   KV_RESIDENT=32768,
                   VECTOR=Path('/vector.gguf'), QUANT='IQ3_S', STATE=Path('/state'),
                   BUILD=Path('/build-sm89'), PORT=8080)
@@ -64,7 +64,7 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(args[args.index('--cvec-mode') + 1], 'project')
         self.assertEqual(args[args.index('--spec') + 1], '2')
         self.assertNotIn('--mtp', args)
-        self.assertEqual(args[args.index('--max-context') + 1], '131072')
+        self.assertEqual(args[args.index('--max-context') + 1], '262144')
         self.assertEqual(args[args.index('--kv-resident') + 1], '32768')
         self.assertTrue(ns['config']['sampling']['experimental_speed_projection'])
 
