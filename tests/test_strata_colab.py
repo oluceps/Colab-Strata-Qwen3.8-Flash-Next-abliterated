@@ -177,7 +177,7 @@ class NotebookTests(unittest.TestCase):
     def test_cells_compile(self):
         notebook = json.loads(SOURCE.with_suffix(".ipynb").read_text())
         code = ["".join(c["source"]) for c in notebook["cells"] if c["cell_type"] == "code"]
-        self.assertEqual(len(code), 6)
+        self.assertEqual(len(code), 7)
         for cell in code:
             if not cell.startswith("!"):
                 ast.parse(cell)

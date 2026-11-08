@@ -44,7 +44,7 @@ Google lists 100 monthly units for Colab Pro. Google AI benefits and hardware av
 
 ## Keep a Colab runtime active
 
-The model service runs in the background after startup. To keep notebook execution active while you use it, run this health-check loop in a new cell. It checks the service every five minutes and prints its status. The L4 continues to consume compute units while the loop runs.
+The model service runs in the background after startup. The notebook's final keepalive/log-monitor cell prints health status and new engine logs every five minutes, with at most 8 KiB of logs per cycle. Run that cell to keep notebook execution active. For health status alone, use this simpler loop. The L4 continues to consume compute units while the loop runs.
 
 ```python
 import time
@@ -95,9 +95,9 @@ MCP does not require Chromium CDP. If opening the default browser fails and Chro
 
 1. Open [Colab](https://colab.research.google.com/). Choose **File → Upload notebook** and upload the `.ipynb`.
 2. Choose **Runtime → Change runtime type**, select **L4** and **High-RAM**, then connect.
-3. Run the five code cells in order: environment/build, download, pack/configure, start/local tests, tunnel/public tests.
+3. Run the first five deployment code cells in order: environment/build, download, pack/configure, start/local tests, tunnel/public tests.
 4. Copy the printed Base URL and Model. Prefer to set `STRATA_API_KEY` in Colab Secrets with notebook access enabled.
-5. Configure your client. Run the final notebook cell to read the key when needed. Its output contains the secret; do not share or save a notebook with that output. Delete the runtime when finished to stop unit consumption.
+5. Configure your client. Run the API-key cell to read the key when needed. The final keepalive/log-monitor cell is optional. Its output contains the secret; do not share or save a notebook with that output. Delete the runtime when finished to stop unit consumption.
 
 Model downloads use two concurrent file tasks, so both large shards can transfer together. Hugging Face Xet fetches data blocks concurrently within files. Hub 2.4.0 and Xet 1.8.0 are pinned, high-performance mode is enabled, and download data buffers are capped at 4 GiB by default (this is not a total process-memory limit). Use `DOWNLOAD_WORKERS=1` for sequential files or `XET_HIGH_PERFORMANCE=False` to disable high-performance mode. Before starting, the disk check reserves all pending file sizes plus 24 GiB. All files use the same resolved revision; the completion manifest is written atomically only after every size and GGUF header check passes. Retries reuse complete files; current Xet does not guarantee partial-file resume across processes. Actual speed depends on Colab networking and storage.
 
