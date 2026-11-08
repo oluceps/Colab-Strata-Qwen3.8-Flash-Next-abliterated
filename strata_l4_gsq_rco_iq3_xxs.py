@@ -1,5 +1,6 @@
 # %% [markdown]
 # # Strata / GSQ-RCO on Colab L4 / A100
+# Strata release v0.2.12 / engine 0.1.58，使用该 release 对应的固定源码提交。
 # 按顺序运行。首次编译可能需要 10–30 分钟，下载时间取决于连接速度。
 # IQ3_XXS 的 128K 配置已在 L4（约 22 GiB 可用显存、53 GiB 系统内存）通过启动与短请求测试。
 # 默认上下文 256K，使用 k8v4 KV streaming。主模型完整 KV 约占 2.39 GiB RAM，尚未在 L4 实测。
@@ -28,7 +29,9 @@ import time
 import urllib.error
 import urllib.request
 
-STRATA_REV = "d5ea7133741e67743c0e886bb426c0ce8d69cf6c"
+STRATA_RELEASE = "v0.2.12"
+STRATA_ENGINE_VERSION = "0.1.58"
+STRATA_REV = "146df3c468739147f520ac3816de806f71232571"
 LLAMA_REV = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 REPO_ID = "alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF"
 QUANT = "IQ3_XXS"  # 可选 IQ3_S 或 IQ2_XS。默认适配约 53 GiB RAM 的 L4 运行时。
@@ -39,7 +42,7 @@ MIN_AVAILABLE_GIB = {"IQ3_S": 54, "IQ3_XXS": 48, "IQ2_XS": 40}[QUANT]
 ROOT = Path("/content/Strata-colab")
 DATA = Path("/content/Strata-data")
 MODEL_DIR = DATA / "models/alesha-gsq-rco"
-PACK = DATA / f"packs/alesha-{QUANT.lower()}-colab"
+PACK = DATA / f"packs/alesha-{QUANT.lower()}-strata-{STRATA_ENGINE_VERSION}-colab"
 STATE = DATA / f"colab-alesha-{QUANT.lower()}"
 PORT = 8095  # Colab 的 node 服务可能占用 8080。
 MAX_CONTEXT = 262144
@@ -75,6 +78,12 @@ def run(args, cwd=None, env=None):
 
 def capture(args):
     return subprocess.check_output([str(x) for x in args], text=True).strip()
+
+def check_engine_version(executable, expected):
+    actual = capture([executable, "--version"])
+    if actual != f"strata {expected}":
+        raise RuntimeError(f"引擎版本不匹配：期望 strata {expected}，实际为 {actual}。请检查构建目录。")
+    return actual
 
 def available_gib():
     fields = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
@@ -122,12 +131,12 @@ if not PY.exists():
     run([sys.executable, "-m", "pip", "install", "uv"])
     run([sys.executable, "-m", "uv", "venv", "--seed", "--python", sys.executable, ROOT / ".venv"])
 run([PY, "-m", "pip", "install", "-r", ROOT / "requirements.txt",
-     "huggingface_hub==2.4.0", "hf-xet==1.8.0"])
+     "-r", ROOT / "requirements-build.txt", "huggingface_hub==2.4.0", "hf-xet==1.8.0"])
 LLAMA = ROOT / "third_party/llama.cpp"
 checkout("https://github.com/ggml-org/llama.cpp.git", LLAMA, LLAMA_REV)
 ENV = dict(os.environ, STRATA_GGUF_PY=str(LLAMA / "gguf-py"))
 ENV["PATH"] = str(PY.parent) + os.pathsep + ENV.get("PATH", "")
-BUILD = ROOT / f"build-colab-sm{CUDA_ARCH}"
+BUILD = ROOT / f"build-colab-{STRATA_ENGINE_VERSION}-sm{CUDA_ARCH}"
 run([PY.parent / "cmake", "-S", ROOT, "-B", BUILD, "-G", "Ninja",
      "-DCMAKE_BUILD_TYPE=Release", "-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
      "-DSTRATA_NATIVE_EXPERTS=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CUDA_ARCH}",
@@ -139,7 +148,8 @@ with (STATE / "build.log").open("w") as log:
 if result.returncode:
     print((STATE / "build.log").read_text(errors="replace")[-12000:])
     raise RuntimeError("引擎编译失败。请检查上方日志。")
-print(f"{gpu_name} sm_{CUDA_ARCH} 引擎编译完成。")
+engine_version = check_engine_version(BUILD / "strata", STRATA_ENGINE_VERSION)
+print(f"{STRATA_RELEASE} / {engine_version}：{gpu_name} sm_{CUDA_ARCH} 引擎编译完成。")
 
 # %% [markdown]
 # ## 下载并检查两个分片与控制向量
@@ -252,8 +262,9 @@ PLE_GGUF = MODEL_DIR / SHARDS[1]
 
 # %%
 signature = {"strata": STRATA_REV, "download": json.loads((MODEL_DIR / "colab-download.json").read_text())}
-required = ["index.txt", "dense.bin", "native_experts.txt", "conversions.json",
-            "tokenizer/vocab.json", "tokenizer/chat_template.jinja"]
+tokenizer_files = ["tokenizer/vocab.json", "tokenizer/merges.txt", "tokenizer/token_type.json",
+                   "tokenizer/tokenizer.json", "tokenizer/chat_template.jinja"]
+required = ["index.txt", "dense.bin", "native_experts.txt", "conversions.json", *tokenizer_files]
 marker = PACK / "colab-complete.json"
 complete = (marker.is_file() and json.loads(marker.read_text()) == signature
             and all((PACK / x).is_file() and (PACK / x).stat().st_size for x in required))
@@ -263,6 +274,9 @@ if not complete:
     PACK.mkdir(parents=True, exist_ok=True)
     marker.unlink(missing_ok=True)
     run([PY, ROOT / "tools/iq_pack.py", "--gguf", GGUF, "--out", PACK], env=ENV)
+    # iq_pack 仅检查 vocab/template；中断后其他 tokenizer 文件缺失时显式重导。
+    if not all((PACK / x).is_file() and (PACK / x).stat().st_size for x in tokenizer_files):
+        run([PY, ROOT / "tools/strata_tokenizer.py", "--gguf", GGUF, "--out", PACK], env=ENV)
     if not all((PACK / x).is_file() and (PACK / x).stat().st_size for x in required):
         raise RuntimeError("pack 缺少必要文件。")
     tmp = marker.with_suffix(".tmp")
@@ -278,6 +292,9 @@ if ENABLE_MTP:
     run([PY, ROOT / "tools/mtp_rt.py", "--gguf", MTP / "mtp-q2_0.gguf",
          "--out", MTP / "rt"], cwd=ROOT, env=ENV)
     shutil.copy2(ROOT / "data/draft_vocab.bin", MTP / "rt/draft_vocab.bin")
+    if not all((MTP / "rt" / name).is_file() and (MTP / "rt" / name).stat().st_size
+               for name in ("dense.txt", "dense.bin", "experts.bin", "draft_vocab.bin")):
+        raise RuntimeError("MTP 运行时缺少必要文件。")
 
 args = ["--pack", str(PACK), "--native", str(GGUF), "--ple-gguf", str(PLE_GGUF),
         "--expert-profile", str(ROOT / "data/expert-profile.bin"), "--expert-cache", "auto",
@@ -295,6 +312,8 @@ CONFIG = STATE / "strata-alesha.json"
 config = {"exe": str(BUILD / "strata"), "args": args, "cwd": str(ROOT),
           "tokenizer": str(PACK / "tokenizer"), "model_name": MODEL_NAME,
           "sampling": {"experimental_speed_projection": True},
+          "drafting": "mtp" if ENABLE_MTP else "off",
+          "env": {"STRATA_ROUTE_TAIL_SKIP": "0"},
           "expert_profile_save": str(STATE / "expert-profile-learned.bin"),
           "expert_profile_save_every": 5,
           "log": str(STATE / "engine.log"), "host": "127.0.0.1", "port": PORT}
@@ -411,6 +430,8 @@ while time.monotonic() < deadline:
     try:
         health = request("/health")
         if health.get("status") == "ok" and health.get("loaded") and health.get("model") == MODEL_NAME:
+            if health.get("max_context") != MAX_CONTEXT:
+                raise RuntimeError(f"服务上下文不匹配：期望 {MAX_CONTEXT}，实际为 {health.get('max_context')}。")
             break
     except (OSError, ValueError):
         pass

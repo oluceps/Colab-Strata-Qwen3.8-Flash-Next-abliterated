@@ -8,11 +8,12 @@ import errno
 import subprocess
 import sys
 import io
+import shutil
 from contextlib import redirect_stdout
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import urllib.request
 
 
@@ -54,6 +55,14 @@ def configuration(**overrides):
 
 
 class NotebookTests(unittest.TestCase):
+    def test_engine_version_check_rejects_a_stale_binary(self):
+        ns = functions()
+        with patch('subprocess.check_output', return_value='strata 0.1.58\n'):
+            self.assertEqual(ns['check_engine_version'](Path('/build/strata'), '0.1.58'), 'strata 0.1.58')
+        with patch('subprocess.check_output', return_value='strata 0.1.40.3\n'):
+            with self.assertRaisesRegex(RuntimeError, '引擎版本不匹配'):
+                ns['check_engine_version'](Path('/build/strata'), '0.1.58')
+
     def test_occupied_port_selects_another_without_stopping_listener(self):
         ns = functions()
         with socket.socket() as listener:
@@ -85,6 +94,8 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(args[args.index('--kv-resident') + 1], '32768')
         self.assertEqual(args[args.index('--kv') + 1], 'k8v4')
         self.assertEqual(config['sampling'], {'experimental_speed_projection': True})
+        self.assertEqual(config['drafting'], 'mtp')
+        self.assertEqual(config['env']['STRATA_ROUTE_TAIL_SKIP'], '0')
         self.assertEqual(config['expert_profile_save'], '/state/expert-profile-learned.bin')
         self.assertEqual(config['expert_profile_save_every'], 5)
 
@@ -98,6 +109,46 @@ class NotebookTests(unittest.TestCase):
         self.assertNotIn('--mtp', args)
         self.assertNotIn('--spec-min-p', args)
         self.assertNotIn('--lookup-chain', args)
+        self.assertEqual(config['drafting'], 'off')
+        self.assertEqual(config['env']['STRATA_ROUTE_TAIL_SKIP'], '0')
+
+    def test_incomplete_tokenizer_is_repaired_before_pack_is_marked_complete(self):
+        tree = source_tree()
+        start = next(i for i, node in enumerate(tree.body) if isinstance(node, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == 'signature' for t in node.targets))
+        end = next(i for i, node in enumerate(tree.body) if isinstance(node, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == 'MTP' for t in node.targets))
+        block = compile(ast.Module(body=tree.body[start:end], type_ignores=[]), str(SOURCE), 'exec')
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            pack, model = data / 'pack', data / 'model'
+            (pack / 'tokenizer').mkdir(parents=True)
+            model.mkdir()
+            (model / 'colab-download.json').write_text('{"revision": "model-revision", "files": []}')
+            for name in ('vocab.json', 'chat_template.jinja'):
+                (pack / 'tokenizer' / name).write_text('existing')
+            calls = []
+
+            def run_pack(args, env):
+                calls.append(args[1].name)
+                if args[1].name == 'iq_pack.py':
+                    for name in ('index.txt', 'dense.bin', 'native_experts.txt', 'conversions.json'):
+                        (pack / name).write_text('packed')
+                elif args[1].name == 'strata_tokenizer.py':
+                    for name in ('vocab.json', 'merges.txt', 'token_type.json', 'tokenizer.json', 'chat_template.jinja'):
+                        (pack / 'tokenizer' / name).write_text('repaired')
+                else:
+                    self.fail(f'Unexpected tool: {args[1]}')
+
+            ns = dict(STRATA_REV='release-revision', MODEL_DIR=model, PACK=pack, DATA=data,
+                      ROOT=Path('/engine'), PY=Path('/python'), GGUF=Path('/model.gguf'),
+                      ENV={}, Path=Path, json=json, shutil=shutil, run=run_pack)
+            with patch('shutil.disk_usage', return_value=Mock(free=32 * 2**30)), redirect_stdout(io.StringIO()):
+                exec(block, ns)
+                exec(block, ns)
+            self.assertEqual(calls, ['iq_pack.py', 'strata_tokenizer.py'])
+            marker = json.loads((pack / 'colab-complete.json').read_text())
+            self.assertEqual(marker['strata'], 'release-revision')
 
     def test_embedded_download_script_compiles(self):
         tree = source_tree()

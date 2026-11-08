@@ -15,6 +15,7 @@ On L4 instances with the previous 128K / int8 KV configuration and MTP disabled,
 | Item | Configuration or measurement |
 |---|---|
 | Recommended runtime | L4 + High-RAM |
+| Engine version | Strata release v0.2.12, engine 0.1.58 |
 | Tested runtime | About 22 GiB usable VRAM and 53 GiB system RAM |
 | Default weights | IQ3_XXS, about 75.8 GB across two GGUF shards |
 | RAM requirement | About 43 GB for experts; startup checks for 48 GiB available RAM |
@@ -120,7 +121,7 @@ Edit the first code cell before a fresh run. To change context on a running serv
 
 The performance defaults use IQ3_XXS, 256K context, k8v4 KV, and existing sampling settings. K8V4 retains 8-bit keys and compresses values to 4 bits, trading some cache precision for memory; set `KV_TYPE="int8"` for comparison. MTP uses Q2_0 draft experts and its own int8 KV, with every draft verified by the main model; this does not switch the main model to IQ2_XS. Lookup chaining may extend the total verification window to 8 tokens, with the actual length chosen by matching and the cost policy. The first run downloads about 6 GB of MTP source tensors and builds runtime files. MTP also uses additional VRAM and host RAM, so the automatic expert cache makes room for it.
 
-The expert cache considers up to 96 swaps every verification window (`--adapt-every 1 --adapt-swaps 96`). `--prompt-cache-tail` keeps a checkpoint near the prompt end at an existing chunk boundary. The server saves the learned expert profile to `STATE / "expert-profile-learned.bin"`, checking every 5 minutes between requests and saving on a clean exit; the next start reuses it. Colab runtime deletion removes this file. CPU workers remain under the engine's automatic selection.
+The expert cache considers up to 96 swaps every verification window (`--adapt-every 1 --adapt-swaps 96`). `--prompt-cache-tail` keeps a checkpoint near the prompt end at an existing chunk boundary. The server saves the learned expert profile to `STATE / "expert-profile-learned.bin"`, checking every 5 minutes between requests and saving on a clean exit; the next start reuses it. Colab runtime deletion removes this file. CPU workers remain under the engine's automatic selection. The service explicitly sets `drafting: "mtp"` and `env.STRATA_ROUTE_TAIL_SKIP="0"`, disabling the newer tail-expert skip approximation so every routed expert is still computed.
 
 These performance settings have not been tested on L4. MTP and more frequent expert swaps can add overhead. Compare with fixed input and sampling settings, recording prefill time, decode tps, draft acceptance, and peak memory separately. Set `ENABLE_MTP=False` or use `PREFILL=1024`/`2048`, regenerate configuration, and restart for comparisons at the same model precision.
 
@@ -167,4 +168,8 @@ python scripts/build_notebook.py
 python -m unittest discover -s tests -p 'test_*.py' -q
 ```
 
-Engine and llama.cpp commits are pinned in the source. Downloads check shard sizes and GGUF headers, without a full-file SHA256 check. Runtime data lives in `/content/Strata-data`; the engine lives in `/content/Strata-colab`. Colab runtime deletion removes these files. This project does not back them up to Drive automatically.
+Strata is pinned to [release v0.2.12](https://github.com/Niko1221/Strata/releases/tag/v0.2.12), commit `146df3c468739147f520ac3816de806f71232571`, which builds engine 0.1.58. The llama.cpp pin remains `3cf03257f219afbe7334045ff7c6a06ac68c627d`, matching the release build dependency. The environment cell installs both upstream `requirements.txt` and `requirements-build.txt`, then checks `strata --version` after building and stops on a mismatch.
+
+To upgrade an existing runtime, stop this project's service, then rerun environment/build, download validation, pack/configuration, and startup. The weights directory is reused, so complete shards need no download. Build and main-model pack directories include the engine version, keeping previous directories while generating new artifacts. Pack validation covers all required tokenizer files and explicitly re-exports missing files; startup also checks the context limit reported by `/health`. IQ3_XXS, 256K, k8v4, and MTP settings are retained. Local checks do not establish a successful Colab CUDA build or GPU inference run.
+
+Downloads check shard sizes and GGUF headers, without a full-file SHA256 check. Runtime data lives in `/content/Strata-data`; the engine lives in `/content/Strata-colab`. Colab runtime deletion removes these files. This project does not back them up to Drive automatically.

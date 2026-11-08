@@ -15,6 +15,7 @@
 | 项目 | 配置与指标 |
 |---|---|
 | 推荐实例 | L4 GPU + High-RAM |
+| 引擎版本 | Strata release v0.2.12，对应引擎 0.1.58 |
 | 运行时资源 | 约 22 GiB 可用显存，53 GiB 系统内存 |
 | 默认量化 | IQ3_XXS，2 个分片文件共约 75.8 GB |
 | 专家内存 | 专家权重约占 43 GB，启动前检查可用内存至少 48 GiB |
@@ -126,7 +127,7 @@ strata_l4_gsq_rco_iq3_xxs.ipynb。选择 L4 High-RAM 运行时并按顺序执行
 
 默认性能配置使用 IQ3_XXS、256K 上下文、k8v4 KV 和原有采样设置。k8v4 保留 8 位 Key，将 Value 压缩为 4 位，存在缓存精度取舍；需要对照时可将 `KV_TYPE` 改为 `"int8"`。MTP 使用 Q2_0 草稿专家和独立的 int8 KV，所有草稿由主模型验证；这不会把主模型切换到 IQ2_XS。lookup chain 可把总验证窗口扩展到最多 8 tokens，实际长度由匹配和收益策略决定。首次启用需要额外下载约 6 GB 的 MTP 源张量并生成运行时文件，也会增加显存与主机内存占用；自动专家缓存会为 MTP 腾出空间。
 
-专家缓存每个验证窗口最多替换 96 个专家（`--adapt-every 1 --adapt-swaps 96`），并启用 `--prompt-cache-tail` 在已有分块边界保留靠近提示词末尾的检查点。服务将学到的专家 profile 保存至 `STATE / "expert-profile-learned.bin"`，每 5 分钟在请求间隙检查保存，并在正常退出时保存，下次启动自动复用。该文件随 Colab 实例删除而清空；CPU 线程由引擎自动选择。
+专家缓存每个验证窗口最多替换 96 个专家（`--adapt-every 1 --adapt-swaps 96`），并启用 `--prompt-cache-tail` 在已有分块边界保留靠近提示词末尾的检查点。服务将学到的专家 profile 保存至 `STATE / "expert-profile-learned.bin"`，每 5 分钟在请求间隙检查保存，并在正常退出时保存，下次启动自动复用。该文件随 Colab 实例删除而清空；CPU 线程由引擎自动选择。服务显式固定 `drafting: "mtp"`，并通过 `env.STRATA_ROUTE_TAIL_SKIP="0"` 关闭新版的尾部专家跳过近似，保留全部路由选中专家的计算。
 
 这组性能参数尚未在 L4 上实测，MTP 与更频繁的专家交换可能增加开销。对比时固定输入与采样参数，分别记录预填充耗时、解码 tps、草稿接受率与内存峰值。可设 `ENABLE_MTP=False`，或将 `PREFILL` 改为 `1024`/`2048` 后重新生成配置并重启，以保留模型精度做对照。
 
@@ -198,4 +199,8 @@ python scripts/build_notebook.py
 python -m unittest discover -s tests -p 'test_*.py' -q
 ```
 
-Strata 引擎与 llama.cpp 的版本已在源码中锁定至特定提交。下载阶段会验证分片大小与 GGUF 文件头，不做完整文件 SHA256 校验。编译输出、配置文件与进程日志存放于 `/content/Strata-data`，引擎代码存放于 `/content/Strata-colab`。Colab 实例重置后会清空上述临时文件，系统不会将数据同步至 Google Drive。
+Strata 锁定到 [release v0.2.12](https://github.com/Niko1221/Strata/releases/tag/v0.2.12) 的提交 `146df3c468739147f520ac3816de806f71232571`，编译得到引擎 0.1.58；llama.cpp 保持 `3cf03257f219afbe7334045ff7c6a06ac68c627d`，与该 release 的构建依赖一致。环境单元同时安装上游的 `requirements.txt` 和 `requirements-build.txt`，编译后检查 `strata --version`，版本不符会停止。
+
+从旧版升级时，先停止本项目的服务，再按顺序运行环境构建、下载检查、配置生成与启动单元。权重下载目录沿用，完整分片可复用；构建目录和主模型 pack 目录包含引擎版本号，会生成新版产物并保留旧目录。pack 完成检查覆盖全部必需 tokenizer 文件，缺失时显式重导；启动时还会核对 `/health` 报告的上下文上限。现有 IQ3_XXS、256K、k8v4 和 MTP 配置继续使用；本地验证不代表已通过 Colab CUDA 编译或 GPU 推理测试。
+
+下载阶段会验证分片大小与 GGUF 文件头，不做完整文件 SHA256 校验。编译输出、配置文件与进程日志存放于 `/content/Strata-data`，引擎代码存放于 `/content/Strata-colab`。Colab 实例重置后会清空上述临时文件，系统不会将数据同步至 Google Drive。
