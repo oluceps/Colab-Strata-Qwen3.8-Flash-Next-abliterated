@@ -2,7 +2,7 @@
 # # Strata / GSQ-RCO on Colab L4 / A100
 # 按顺序运行。首次编译可能需要 10–30 分钟，下载时间取决于连接速度。
 # IQ3_XXS 的 128K 配置已在 L4（约 22 GiB 可用显存、53 GiB 系统内存）通过启动与短请求测试。
-# 默认上下文 256K，使用 int8 KV streaming。完整 KV 约占 3.09 GiB RAM，256K 尚未在 L4 实测。
+# 默认上下文 256K，使用 k8v4 KV streaming。主模型完整 KV 约占 2.39 GiB RAM，尚未在 L4 实测。
 # IQ3_S：下载约 83.6 GB，专家占约 50 GB RAM。IQ2_XS：约 68 GB / 35.5 GB。
 # IQ3_XXS：下载约 75.8 GB，专家占约 43 GB RAM。仓库作者未实测此档位。
 # IQ3_S 全新安装建议约 110 GB 可用磁盘。代码按缺失文件总量加 24 GiB 余量检查。
@@ -43,9 +43,12 @@ PACK = DATA / f"packs/alesha-{QUANT.lower()}-colab"
 STATE = DATA / f"colab-alesha-{QUANT.lower()}"
 PORT = 8095  # Colab 的 node 服务可能占用 8080。
 MAX_CONTEXT = 262144
-KV_RESIDENT = 32768  # int8 KV streaming：完整缓存放在 RAM，窗口留在显存。
+KV_TYPE = "k8v4"  # 8-bit Key + 4-bit Value；可切回 "int8" 比较精度与速度。
+KV_RESIDENT = 32768  # KV streaming：完整缓存放在 RAM，窗口留在显存。
 PREFILL = "auto"  # 按显存预算选择分块，默认上限 8192；可设为 1024/2048 做对照。
 ENABLE_MTP = True  # 主模型验证草稿；设为 False 可对比仅 lookup 的速度与显存。
+DOWNLOAD_WORKERS = 2  # 并行下载两个大分片；每个文件由 HF Xet 并发获取数据块。
+XET_HIGH_PERFORMANCE = True  # 高性能模式；下载数据缓冲默认限制在 4 GiB。
 SHARDS = [f"{QUANT}/Qwen3.8-Flash-Next-GSQ-RCO-{QUANT}-{i:05d}-of-00002.gguf" for i in (1, 2)]
 VECTOR_NAME = "Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf"
 VECTOR = MODEL_DIR / VECTOR_NAME
@@ -118,7 +121,8 @@ PY = ROOT / ".venv/bin/python"
 if not PY.exists():
     run([sys.executable, "-m", "pip", "install", "uv"])
     run([sys.executable, "-m", "uv", "venv", "--seed", "--python", sys.executable, ROOT / ".venv"])
-run([PY, "-m", "pip", "install", "-r", ROOT / "requirements.txt", "huggingface_hub"])
+run([PY, "-m", "pip", "install", "-r", ROOT / "requirements.txt",
+     "huggingface_hub==2.4.0", "hf-xet==1.8.0"])
 LLAMA = ROOT / "third_party/llama.cpp"
 checkout("https://github.com/ggml-org/llama.cpp.git", LLAMA, LLAMA_REV)
 ENV = dict(os.environ, STRATA_GGUF_PY=str(LLAMA / "gguf-py"))
@@ -153,15 +157,22 @@ if not hf_token:
         hf_token = None
 download_env = dict(ENV)
 download_env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+download_env["HF_XET_HIGH_PERFORMANCE"] = "1" if XET_HIGH_PERFORMANCE else "0"
+# 新版 Xet 的内存预算可显式限制；保留用户提供的覆盖值。
+download_env.setdefault("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", str(2 * 2**30))
+download_env.setdefault("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE", str(512 * 2**20))
+download_env.setdefault("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT", str(4 * 2**30))
 if hf_token:
     download_env["HF_TOKEN"] = hf_token
 download_script = r'''
 from huggingface_hub import HfApi, hf_hub_download
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json, os, shutil, threading, time
-repo, destination, names = __import__('sys').argv[1:]
+repo, destination, names, workers = __import__('sys').argv[1:]
 destination = Path(destination)
 names = json.loads(names)
+workers = max(1, min(int(workers), len(names)))
 token = os.environ.get("HF_TOKEN") or False
 api = HfApi(token=token)
 print('读取 Hugging Face 模型信息……', flush=True)
@@ -170,51 +181,62 @@ files = {f.rfilename: f for f in info.siblings}
 missing = [n for n in names if n not in files]
 if missing:
     raise RuntimeError(f"模型仓库缺少分片：{missing}")
+for name in names:
+    if not files[name].size:
+        raise RuntimeError(f"服务器没有返回文件大小：{name}")
 pending = sum(files[n].size for n in names
               if not (destination / n).is_file() or (destination / n).stat().st_size != files[n].size)
+# 一次为所有并行任务预留空间；不把其他线程正在写入的文件当作额外下载预算。
 if shutil.disk_usage(destination).free < pending + 24 * 2**30:
     raise RuntimeError(f"需要 {pending / 2**30 + 24:.1f} GiB 可用磁盘，包含安装余量。")
-records = []
-for name in names:
-    print(f'检查文件：{name}', flush=True)
+print(f'并行文件数：{workers}；待下载文件总大小：{pending / 2**30:.2f} GiB', flush=True)
+
+def fetch_and_verify(name):
     size = files[name].size
-    if not size:
-        raise RuntimeError(f"服务器没有返回文件大小：{name}")
     target = destination / name
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.is_file() or target.stat().st_size != size:
         if target.is_symlink():
             raise RuntimeError(f"旧模型分片不完整：{target}")
-        if shutil.disk_usage(destination).free < size + 12 * 2**30:
-            free = shutil.disk_usage(destination).free / 2**30
-            needed = size / 2**30 + 12
-            raise RuntimeError(f"下载 {name} 前需要 {needed:.1f} GiB 可用空间，当前为 {free:.1f} GiB。")
-        print(f'下载或续传：{name}', flush=True)
-        stop = threading.Event()
-        def progress():
-            while not stop.wait(30):
-                size_now = sum(p.stat().st_size for p in destination.rglob('*') if p.is_file())
-                print(f'下载仍在运行，目录文件共 {size_now / 2**30:.2f} GiB', flush=True)
-        worker = threading.Thread(target=progress, daemon=True)
-        worker.start()
-        try:
-            hf_hub_download(repo_id=repo, filename=name, revision=info.sha,
-                            local_dir=destination, token=token)
-        finally:
-            stop.set()
-            worker.join()
-
+        print(f'下载或重试：{name}', flush=True)
+        hf_hub_download(repo_id=repo, filename=name, revision=info.sha,
+                        local_dir=destination, token=token)
+    else:
+        print(f'复用完整文件：{name}', flush=True)
     if target.stat().st_size != size:
         raise RuntimeError(f"模型分片大小不符：{name}")
     with target.open('rb') as f:
         if f.read(4) != b'GGUF':
             raise RuntimeError(f"文件不是 GGUF：{name}")
-    records.append({"name": name, "size": size, "mtime_ns": target.stat().st_mtime_ns})
-(destination / 'colab-download.json').write_text(json.dumps({"revision": info.sha, "files": records}, indent=2))
+    return {"name": name, "size": size, "mtime_ns": target.stat().st_mtime_ns}
+
+stop = threading.Event()
+def progress():
+    while not stop.wait(30):
+        size_now = 0
+        for path in destination.rglob('*'):
+            try:
+                if path.is_file():
+                    size_now += path.stat().st_size
+            except FileNotFoundError:
+                pass  # Xet 可能正在把临时文件重命名为完成文件。
+        print(f'下载仍在运行，目录文件共 {size_now / 2**30:.2f} GiB', flush=True)
+worker = threading.Thread(target=progress, daemon=True)
+worker.start()
+try:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        records = list(pool.map(fetch_and_verify, names))
+finally:
+    stop.set()
+    worker.join()
+manifest = destination / 'colab-download.json'
+tmp = manifest.with_suffix('.tmp')
+tmp.write_text(json.dumps({"revision": info.sha, "files": records}, indent=2))
+tmp.replace(manifest)
 print('两个分片与控制向量的大小和 GGUF 文件头检查通过。未执行全文件 SHA256 检查。')
 '''
 try:
-    run([PY, "-c", download_script, REPO_ID, MODEL_DIR, json.dumps(SHARDS + [VECTOR_NAME])], env=download_env)
+    run([PY, "-c", download_script, REPO_ID, MODEL_DIR, json.dumps(SHARDS + [VECTOR_NAME]), DOWNLOAD_WORKERS], env=download_env)
 finally:
     download_env.pop("HF_TOKEN", None)
     hf_token = None
@@ -226,7 +248,7 @@ PLE_GGUF = MODEL_DIR / SHARDS[1]
 # 完成标记包含源码版本和分片信息。中断的 pack 不会被当作完成。
 # 不生成额外的 experts.bin，避免复制约 50 GiB 专家权重。
 # GSQ-RCO 使用原生张量，不启用 Orca 的 --compat-bf16 转换。
-# 默认构建 MTP 草稿层；主模型仍用 IQ3_XXS，int8 KV 与原有采样参数保持不变。
+# 默认构建 MTP 草稿层；主模型仍用 IQ3_XXS，KV 使用上方配置，原有采样参数保持不变。
 
 # %%
 signature = {"strata": STRATA_REV, "download": json.loads((MODEL_DIR / "colab-download.json").read_text())}
@@ -260,7 +282,7 @@ if ENABLE_MTP:
 args = ["--pack", str(PACK), "--native", str(GGUF), "--ple-gguf", str(PLE_GGUF),
         "--expert-profile", str(ROOT / "data/expert-profile.bin"), "--expert-cache", "auto",
         "--prefill", str(PREFILL), "--spec", "4" if ENABLE_MTP else "2",
-        "--max-context", str(MAX_CONTEXT), "--kv", "int8",
+        "--max-context", str(MAX_CONTEXT), "--kv", str(KV_TYPE),
         "--adapt-every", "1", "--adapt-swaps", "96", "--prompt-cache-tail"]
 if KV_RESIDENT and MAX_CONTEXT > KV_RESIDENT:
     args += ["--kv-resident", str(KV_RESIDENT)]
@@ -277,7 +299,7 @@ config = {"exe": str(BUILD / "strata"), "args": args, "cwd": str(ROOT),
           "expert_profile_save_every": 5,
           "log": str(STATE / "engine.log"), "host": "127.0.0.1", "port": PORT}
 CONFIG.write_text(json.dumps(config, indent=2))
-print(f"配置：context={MAX_CONTEXT}, prefill={PREFILL}, MTP={ENABLE_MTP}")
+print(f"配置：context={MAX_CONTEXT}, kv={KV_TYPE}, prefill={PREFILL}, MTP={ENABLE_MTP}")
 
 # %% [markdown]
 # ## 启动服务，并测试推理

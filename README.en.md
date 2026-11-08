@@ -10,7 +10,7 @@ Run Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS with a refusal-direction control vector o
 
 ## Performance and hardware
 
-On L4 instances with the previous 128K configuration and MTP disabled, measured conversation decode speeds range from 32 to 57 tokens/s (tps), with peak speeds reaching 80+ tps. CPU performance, context length, expert cache hit rate, and draft acceptance rate affect speed.
+On L4 instances with the previous 128K / int8 KV configuration and MTP disabled, measured conversation decode speeds range from 32 to 57 tokens/s (tps), with peak speeds reaching 80+ tps. CPU performance, context length, expert cache hit rate, and draft acceptance rate affect speed.
 
 | Item | Configuration or measurement |
 |---|---|
@@ -18,12 +18,12 @@ On L4 instances with the previous 128K configuration and MTP disabled, measured 
 | Tested runtime | About 22 GiB usable VRAM and 53 GiB system RAM |
 | Default weights | IQ3_XXS, about 75.8 GB across two GGUF shards |
 | RAM requirement | About 43 GB for experts; startup checks for 48 GiB available RAM |
-| Default context | 262,144 tokens, int8 KV streaming, 32,768 cells resident in VRAM |
-| Full KV cache | About 3.09 GiB of system RAM at 256K, calculated from the engine format |
+| Default context | 262,144 tokens, k8v4 KV streaming, 32,768 cells resident in VRAM |
+| Full KV cache | About 2.39 GiB of system RAM for the main model at 256K, calculated from the engine format |
 | Long-input test (previous 128K configuration) | 34,043 tokens, correct recall of an opening marker, about 60 seconds |
 | RAM after test (previous 128K configuration) | About 6.4 GiB available |
 
-256K is the base model's native context length. The engine allocates the full host KV cache at startup based on the configured limit; moving from 128K to 256K adds about 1.55 GiB of system RAM. Other buffers also affect total RAM and peak VRAM. The 256K configuration has not been tested on L4, and full 128K and 256K inputs remain untested. The long-input time includes prefill and does not measure decode tps. This deployment serves text only. The first build takes about 10–30 minutes; download time depends on network speed. The disk check reserves the missing download sizes plus 24 GiB of workspace.
+256K is the base model's native context length. The engine allocates the full host KV cache at startup based on the configured limit. At 256K, the main model's k8v4 KV uses about 2.39 GiB, saving about 0.70 GiB compared with int8's 3.09 GiB. This excludes the MTP draft layer's int8 KV; other buffers also affect total RAM and peak VRAM. The 256K configuration has not been tested on L4, and full 128K and 256K inputs remain untested. The long-input time includes prefill and does not measure decode tps. This deployment serves text only. The first build takes about 10–30 minutes; download time depends on network speed. The disk check reserves the missing download sizes plus 24 GiB of workspace.
 
 ## Model and capabilities
 
@@ -31,7 +31,7 @@ On L4 instances with the previous 128K configuration and MTP disabled, measured 
 
 The author tested IQ3_S and IQ2_XS, not IQ3_XXS. Both tested sizes passed five small coding tasks and marker retrieval at 32K/115K. At 32K, decode reached about 59/87 tps on RTX 3090 + EPYC. These results do not establish L4 IQ3_XXS accuracy or speed. See the [measurements](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF#measurements).
 
-Optional IQ2_XS uses about 68 GB of downloads and 35.5 GB of expert RAM; IQ3_S uses about 83.6/50 GB. The default for a 53 GiB runtime is IQ3_XXS; tuning preserves main-model precision and int8 KV. If memory is tight, first reduce the prefill chunk or disable MTP for comparison. Choose a lower quantization only when its precision tradeoff is explicitly acceptable. Model terms are in the [HF license](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE); engine terms are in its upstream repository.
+Optional IQ2_XS uses about 68 GB of downloads and 35.5 GB of expert RAM; IQ3_S uses about 83.6/50 GB. The default for a 53 GiB runtime is IQ3_XXS; tuning preserves the main-model quantization and now defaults to k8v4 KV. If memory is tight, first reduce the prefill chunk or disable MTP for comparison. Choose a lower quantization only when its precision tradeoff is explicitly acceptable. Model terms are in the [HF license](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE); engine terms are in its upstream repository.
 
 ## Use the monthly Pro allowance
 
@@ -98,6 +98,8 @@ MCP does not require Chromium CDP. If opening the default browser fails and Chro
 4. Copy the printed Base URL and Model. Prefer to set `STRATA_API_KEY` in Colab Secrets with notebook access enabled.
 5. Configure your client. Run the final notebook cell to read the key when needed. Its output contains the secret; do not share or save a notebook with that output. Delete the runtime when finished to stop unit consumption.
 
+Model downloads use two concurrent file tasks, so both large shards can transfer together. Hugging Face Xet fetches data blocks concurrently within files. Hub 2.4.0 and Xet 1.8.0 are pinned, high-performance mode is enabled, and download data buffers are capped at 4 GiB by default (this is not a total process-memory limit). Use `DOWNLOAD_WORKERS=1` for sequential files or `XET_HIGH_PERFORMANCE=False` to disable high-performance mode. Before starting, the disk check reserves all pending file sizes plus 24 GiB. All files use the same resolved revision; the completion manifest is written atomically only after every size and GGUF header check passes. Retries reuse complete files; current Xet does not guarantee partial-file resume across processes. Actual speed depends on Colab networking and storage.
+
 The public HF repository needs no token. Set `HF_TOKEN` in Colab Secrets for restricted downloads. API keys require at least 24 ASCII characters with no whitespace. If absent, the notebook generates one in a private runtime file. Keep keys out of shared notebook output.
 
 ## Configuration and API
@@ -108,12 +110,15 @@ Edit the first code cell before a fresh run. To change context on a running serv
 |---|---|---|
 | `QUANT` | `IQ3_XXS` | Also supports `IQ2_XS`, `IQ3_S` |
 | `MAX_CONTEXT` | `262144` | Shared input/output limit |
+| `KV_TYPE` | `"k8v4"` | 8-bit keys + 4-bit values; use `"int8"` for precision comparisons |
 | `KV_RESIDENT` | `32768` | VRAM window; full KV stays in RAM |
 | `PREFILL` | `"auto"` | Selects a prefill chunk within the VRAM budget, up to 8192 by default |
 | `ENABLE_MTP` | `True` | MTP with `--spec 4 --spec-min-p 0.5 --lookup-chain 4` |
+| `DOWNLOAD_WORKERS` | `2` | Concurrent files; Xet manages concurrency within files |
+| `XET_HIGH_PERFORMANCE` | `True` | Xet high-performance downloads, with data buffers capped at 4 GiB by default |
 | `PORT` | `8095` | Avoids Colab's possible 8080 listener; selects 8095–8105 if occupied |
 
-The performance defaults retain IQ3_XXS, 256K context, int8 KV, and existing sampling settings. MTP uses Q2_0 draft experts, with every draft verified by the main model; this does not switch the main model to IQ2_XS. Lookup chaining may extend the total verification window to 8 tokens, with the actual length chosen by matching and the cost policy. The first run downloads about 6 GB of MTP source tensors and builds runtime files. MTP also uses additional VRAM and host RAM, so the automatic expert cache makes room for it.
+The performance defaults use IQ3_XXS, 256K context, k8v4 KV, and existing sampling settings. K8V4 retains 8-bit keys and compresses values to 4 bits, trading some cache precision for memory; set `KV_TYPE="int8"` for comparison. MTP uses Q2_0 draft experts and its own int8 KV, with every draft verified by the main model; this does not switch the main model to IQ2_XS. Lookup chaining may extend the total verification window to 8 tokens, with the actual length chosen by matching and the cost policy. The first run downloads about 6 GB of MTP source tensors and builds runtime files. MTP also uses additional VRAM and host RAM, so the automatic expert cache makes room for it.
 
 The expert cache considers up to 96 swaps every verification window (`--adapt-every 1 --adapt-swaps 96`). `--prompt-cache-tail` keeps a checkpoint near the prompt end at an existing chunk boundary. The server saves the learned expert profile to `STATE / "expert-profile-learned.bin"`, checking every 5 minutes between requests and saving on a clean exit; the next start reuses it. Colab runtime deletion removes this file. CPU workers remain under the engine's automatic selection.
 

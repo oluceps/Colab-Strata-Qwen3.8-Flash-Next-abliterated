@@ -39,7 +39,7 @@ def configuration(**overrides):
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             name = node.targets[0].id
-            if name in {'QUANT', 'MAX_CONTEXT', 'KV_RESIDENT', 'PREFILL', 'ENABLE_MTP'}:
+            if name in {'QUANT', 'MAX_CONTEXT', 'KV_TYPE', 'KV_RESIDENT', 'PREFILL', 'ENABLE_MTP'}:
                 defaults[name] = ast.literal_eval(node.value)
     start = next(i for i, node in enumerate(tree.body)
                  if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'args' for t in node.targets))
@@ -83,13 +83,13 @@ class NotebookTests(unittest.TestCase):
         self.assertIn('--prompt-cache-tail', args)
         self.assertEqual(args[args.index('--max-context') + 1], '262144')
         self.assertEqual(args[args.index('--kv-resident') + 1], '32768')
-        self.assertEqual(args[args.index('--kv') + 1], 'int8')
+        self.assertEqual(args[args.index('--kv') + 1], 'k8v4')
         self.assertEqual(config['sampling'], {'experimental_speed_projection': True})
         self.assertEqual(config['expert_profile_save'], '/state/expert-profile-learned.bin')
         self.assertEqual(config['expert_profile_save_every'], 5)
 
-    def test_mtp_can_be_disabled_without_changing_model_or_kv_precision(self):
-        config = configuration(ENABLE_MTP=False, PREFILL=1024)
+    def test_mtp_can_be_disabled_with_int8_kv_for_comparison(self):
+        config = configuration(ENABLE_MTP=False, PREFILL=1024, KV_TYPE="int8")
         args = config['args']
         self.assertEqual(config['model_name'], 'alesha-qwen3.8-flash-next-gsq-rco-iq3_xxs')
         self.assertEqual(args[args.index('--prefill') + 1], '1024')

@@ -10,7 +10,7 @@
 
 ## 性能与硬件规范
 
-此前在 L4 实例的 128K 配置下（关闭 MTP），实测对话解码速度约为 32 到 57 tokens/s（tps），峰值可达 80+ tps。实际速度受 CPU 性能、上下文长度、专家缓存命中率与草稿接受率影响。
+此前在 L4 实例的 128K / int8 KV 配置下（关闭 MTP），实测对话解码速度约为 32 到 57 tokens/s（tps），峰值可达 80+ tps。实际速度受 CPU 性能、上下文长度、专家缓存命中率与草稿接受率影响。
 
 | 项目 | 配置与指标 |
 |---|---|
@@ -18,14 +18,14 @@
 | 运行时资源 | 约 22 GiB 可用显存，53 GiB 系统内存 |
 | 默认量化 | IQ3_XXS，2 个分片文件共约 75.8 GB |
 | 专家内存 | 专家权重约占 43 GB，启动前检查可用内存至少 48 GiB |
-| 默认上下文长度 | 262,144 tokens，int8 KV streaming，显存缓存窗口 32,768 |
-| KV 内存占用 | 256K 完整 KV 缓存按引擎格式计算约占 3.09 GiB 系统内存 |
+| 默认上下文长度 | 262,144 tokens，k8v4 KV streaming，显存缓存窗口 32,768 |
+| KV 内存占用 | 256K 主模型完整 KV 缓存按引擎格式计算约占 2.39 GiB 系统内存 |
 | 长输入测试（此前 128K 配置） | 34,043 tokens，正确回忆开头标记，耗时约 60 秒 |
 | 测试后剩余内存（此前 128K 配置） | 约 6.4 GiB 可用系统内存 |
 
 ![运行时资源监控](screenshot/monitor.png)
 
-256K 为基础模型的原生上下文长度。主机 KV 缓存按配置上限在启动时分配，从 128K 扩到 256K 增加约 1.55 GiB 系统内存；进程总内存与显存峰值还受其他缓冲区影响。项目尚未实测 L4 上的 256K 配置，也未对完整 128K 或 256K 输入进行压力测试。34K 测试耗时包含预填充耗时，不代表纯解码速度。服务默认仅处理文本输入。首次源码编译需要 10 到 30 分钟。磁盘检查要求剩余空间大于下载文件总大小加 24 GiB 工作空间。
+256K 为基础模型的原生上下文长度。主机 KV 缓存按配置上限在启动时分配。256K 下 k8v4 主模型 KV 约为 2.39 GiB，比 int8 的 3.09 GiB 少约 0.70 GiB；此数字不包含 MTP 草稿层的 int8 KV，进程总内存与显存峰值还受其他缓冲区影响。项目尚未实测 L4 上的 256K 配置，也未对完整 128K 或 256K 输入进行压力测试。34K 测试耗时包含预填充耗时，不代表纯解码速度。服务默认仅处理文本输入。首次源码编译需要 10 到 30 分钟。磁盘检查要求剩余空间大于下载文件总大小加 24 GiB 工作空间。
 
 ## 模型权重与控制向量
 
@@ -33,7 +33,7 @@
 
 原仓库作者测试了 IQ3_S 与 IQ2_XS 量化，未测试 IQ3_XXS。作者报告两档量化通过 5 个小型代码工具任务与 32K/115K 标记检索测试。在 RTX 3090 与 EPYC 平台上，32K 上下文的解码速度约为 59 与 87 tps。该测试结果仅供能力参考，不代表 Colab L4 的表现。详细数据参见[原仓库测量说明](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF#measurements)。
 
-代码同时支持 IQ2_XS（约 68 GB 下载量，35.5 GB 专家内存）与 IQ3_S（约 83.6 GB 下载量，50 GB 专家内存）。在 53 GiB 内存的运行时中默认使用 IQ3_XXS，调优优先保留主模型精度与 int8 KV。若内存紧张，先减小预填充分块或关闭 MTP 做对照；仅在明确接受精度取舍时选择更低量化。模型许可证参见 [Hugging Face LICENSE](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE)。
+代码同时支持 IQ2_XS（约 68 GB 下载量，35.5 GB 专家内存）与 IQ3_S（约 83.6 GB 下载量，50 GB 专家内存）。在 53 GiB 内存的运行时中默认使用 IQ3_XXS，调优保留主模型量化等级，默认 KV 改为 k8v4。若内存紧张，先减小预填充分块或关闭 MTP 做对照；仅在明确接受精度取舍时选择更低量化。模型许可证参见 [Hugging Face LICENSE](https://huggingface.co/alesha-pro/Qwen3.8-Flash-Next-abliterated-GSQ-RCO-Strata-GGUF/blob/main/LICENSE)。
 
 ## Colab Pro 额度计算
 
@@ -104,6 +104,8 @@ strata_l4_gsq_rco_iq3_xxs.ipynb。选择 L4 High-RAM 运行时并按顺序执行
 4. 复制末尾输出的 Base URL 与 Model 名称。可在 Colab Secrets 中预先配置 `STRATA_API_KEY`，并授权 notebook 读取。
 5. 在本地客户端配置 Base URL、API 密钥与模型名称。若未预设密钥，运行最后一个单元查看自动生成的密钥。使用完毕后手动断开并删除运行时，避免额度消耗。
 
+模型下载默认使用两个文件任务并行，两个大分片可同时传输；文件内部由 Hugging Face Xet 并发获取数据块。固定安装 Hub 2.4.0 / Xet 1.8.0，启用高性能模式，并将下载数据缓冲上限设为 4 GiB（不是进程总内存上限）。`DOWNLOAD_WORKERS=1` 可退回逐文件下载，`XET_HIGH_PERFORMANCE=False` 可关闭高性能模式。启动并发前按全部待下载文件总大小加 24 GiB 检查磁盘；所有文件使用同一次查询取得的 revision，并在大小和 GGUF 文件头检查全部通过后原子写入完成记录。重试会复用完整文件；新版 Xet 不保证未完成分片跨进程续传，速度也受 Colab 网络和磁盘限制。
+
 下载公开 Hugging Face 仓库无需 token。若需访问受限资源，可在 Colab Secrets 中添加 `HF_TOKEN`。API 密钥必须包含至少 24 位无空格 ASCII 字符。未配置密钥时系统会自动生成并存入私有文件。请勿在公开 notebook 中打印密钥。
 
 ## 配置参数与接口调用
@@ -114,12 +116,15 @@ strata_l4_gsq_rco_iq3_xxs.ipynb。选择 L4 High-RAM 运行时并按顺序执行
 |---|---|---|
 | `QUANT` | `IQ3_XXS` | 量化等级，可选 `IQ2_XS` 或 `IQ3_S` |
 | `MAX_CONTEXT` | `262144` | 上下文总长度（包含输入与输出） |
+| `KV_TYPE` | `"k8v4"` | 8-bit Key + 4-bit Value；可改回 `"int8"` 做精度对照 |
 | `KV_RESIDENT` | `32768` | 显存驻留 KV 窗口大小，其余放入系统内存 |
 | `PREFILL` | `"auto"` | 根据显存预算自动选择预填充分块，默认上限 8192 |
 | `ENABLE_MTP` | `True` | 启用 MTP：`--spec 4 --spec-min-p 0.5 --lookup-chain 4` |
+| `DOWNLOAD_WORKERS` | `2` | 同时下载的文件数，Xet 另行管理文件内部并发 |
+| `XET_HIGH_PERFORMANCE` | `True` | 启用 Xet 高性能下载，数据缓冲默认最多 4 GiB |
 | `PORT` | `8095` | 服务监听端口，避免冲突推荐使用 8095 到 8105 |
 
-默认性能配置保留 IQ3_XXS、256K 上下文、int8 KV 和原有采样设置。MTP 使用 Q2_0 草稿专家，所有草稿由主模型验证；这不会把主模型切换到 IQ2_XS。lookup chain 可把总验证窗口扩展到最多 8 tokens，实际长度由匹配和收益策略决定。首次启用需要额外下载约 6 GB 的 MTP 源张量并生成运行时文件，也会增加显存与主机内存占用；自动专家缓存会为 MTP 腾出空间。
+默认性能配置使用 IQ3_XXS、256K 上下文、k8v4 KV 和原有采样设置。k8v4 保留 8 位 Key，将 Value 压缩为 4 位，存在缓存精度取舍；需要对照时可将 `KV_TYPE` 改为 `"int8"`。MTP 使用 Q2_0 草稿专家和独立的 int8 KV，所有草稿由主模型验证；这不会把主模型切换到 IQ2_XS。lookup chain 可把总验证窗口扩展到最多 8 tokens，实际长度由匹配和收益策略决定。首次启用需要额外下载约 6 GB 的 MTP 源张量并生成运行时文件，也会增加显存与主机内存占用；自动专家缓存会为 MTP 腾出空间。
 
 专家缓存每个验证窗口最多替换 96 个专家（`--adapt-every 1 --adapt-swaps 96`），并启用 `--prompt-cache-tail` 在已有分块边界保留靠近提示词末尾的检查点。服务将学到的专家 profile 保存至 `STATE / "expert-profile-learned.bin"`，每 5 分钟在请求间隙检查保存，并在正常退出时保存，下次启动自动复用。该文件随 Colab 实例删除而清空；CPU 线程由引擎自动选择。
 
