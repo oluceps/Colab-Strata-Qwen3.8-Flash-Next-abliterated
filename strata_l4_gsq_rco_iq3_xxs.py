@@ -538,20 +538,34 @@ print("API key 文件：", key_path)
 
 # %% [markdown]
 # ## 保活与日志监控
-# 部署完成后运行此单元，每 5 分钟输出服务状态和新增引擎日志（每轮最多 8 KiB）。
+# 部署完成后运行此单元，每秒输出心跳并读取新增引擎日志（每轮最多 8 KiB）。
+# 每 60 秒检查一次服务健康状态，并刷新输出区域，避免长时间堆积日志。
 # 点击本单元的停止按钮结束循环；模型服务与隧道仍在后台运行。
 # L4 会继续消耗计算额度，此循环不能阻止 Colab 主动回收运行时。
 
 # %%
-KEEPALIVE_INTERVAL = 300
+from IPython.display import clear_output
+
+KEEPALIVE_INTERVAL = 1
+HEALTH_CHECK_INTERVAL = 60
+OUTPUT_REFRESH_INTERVAL = 60
+next_health_check = 0.0
+next_output_refresh = time.monotonic() + OUTPUT_REFRESH_INTERVAL
+status = "等待健康检查"
 log_position = 0
 try:
     while True:
-        try:
-            status = request("/health")
-            print(time.strftime("%H:%M:%S"), status, flush=True)
-        except Exception as exc:
-            print(time.strftime("%H:%M:%S"), type(exc).__name__, str(exc), flush=True)
+        now = time.monotonic()
+        if now >= next_output_refresh:
+            clear_output(wait=True)
+            next_output_refresh = now + OUTPUT_REFRESH_INTERVAL
+        if now >= next_health_check:
+            try:
+                status = request("/health", timeout=2)
+            except Exception as exc:
+                status = f"{type(exc).__name__}: {exc}"
+            next_health_check = time.monotonic() + HEALTH_CHECK_INTERVAL
+        print(time.strftime("%H:%M:%S"), "监控心跳", status, flush=True)
         try:
             with (STATE / "engine.log").open("rb") as log:
                 end = log.seek(0, 2)

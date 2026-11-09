@@ -51,19 +51,7 @@ L4 High-RAM 运行时的历史消耗记录为 1.57 计算单元/小时。该数�
 
 ## 保持运行时活跃
 
-模型在后台运行。notebook 最末尾已内置“保活与日志监控”单元，运行后每 5 分钟输出健康状态和新增引擎日志，每轮日志最多 8 KiB。保持该单元执行即可；若只需健康状态，也可使用以下简化循环：
-
-```python
-import time
-
-while True:
-    try:
-        status = request("/health")
-        print(time.strftime("%H:%M:%S"), status, flush=True)
-    except Exception as exc:
-        print(time.strftime("%H:%M:%S"), type(exc).__name__, flush=True)
-    time.sleep(300)
-```
+模型在后台运行。运行 notebook 最末尾的“保活与日志监控”单元后，每秒输出时间戳心跳并读取新增引擎日志；即使没有推理请求或新增日志，也会持续输出。健康状态每 60 秒检查一次，请求超时为 2 秒。每轮日志最多 8 KiB，每分钟刷新输出区域，避免 notebook 输出无限堆积。可在该单元调整 `KEEPALIVE_INTERVAL`、`HEALTH_CHECK_INTERVAL` 和 `OUTPUT_REFRESH_INTERVAL`。
 
 若需停止保活循环，点击 Colab 单元格的停止按钮。若需终止推理服务，运行 `stop_owned("tunnel")` 与 `stop_owned("server")`。Colab Pro+ 支持最长 24 小时连续运行，Colab Pro 仍受限于运行时策略与资源回收。保活循环无法阻止系统主动回收实例。详情参见 [Colab 官方运行时说明](https://research.google.com/colaboratory/faq.html)。请勿使用浏览器模拟点击脚本。
 

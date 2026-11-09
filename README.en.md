@@ -44,19 +44,7 @@ Google lists 100 monthly units for Colab Pro. Google AI benefits and hardware av
 
 ## Keep a Colab runtime active
 
-The model service runs in the background after startup. The notebook's final keepalive/log-monitor cell prints health status and new engine logs every five minutes, with at most 8 KiB of logs per cycle. Run that cell to keep notebook execution active. For health status alone, use this simpler loop. The L4 continues to consume compute units while the loop runs.
-
-```python
-import time
-
-while True:
-    try:
-        status = request("/health")
-        print(time.strftime("%H:%M:%S"), status, flush=True)
-    except Exception as exc:
-        print(time.strftime("%H:%M:%S"), type(exc).__name__, flush=True)
-    time.sleep(300)
-```
+The model service runs in the background after startup. Run the notebook's final keepalive/log-monitor cell for a timestamped heartbeat and new engine logs every second, including when there are no inference requests or new logs. Health is checked every 60 seconds with a two-second timeout. Logs are capped at 8 KiB per cycle, and the output area is refreshed every minute to keep notebook output bounded. Adjust `KEEPALIVE_INTERVAL`, `HEALTH_CHECK_INTERVAL`, and `OUTPUT_REFRESH_INTERVAL` in that cell. The L4 continues to consume compute units while the loop runs.
 
 Return to the cell and press Colab's stop button to interrupt the loop. To stop inference too, run `stop_owned("tunnel")` and `stop_owned("server")`. Colab Pro+ supports continuous execution for up to 24 hours when enough compute units remain. Colab Pro runtime length depends on runtime limits and resource availability; this loop cannot prevent runtime reclamation. See Google's [runtime FAQ](https://research.google.com/colaboratory/faq.html). Do not simulate browser clicks or bypass Colab's idle limits with scripts.
 
